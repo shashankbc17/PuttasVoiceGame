@@ -108,6 +108,7 @@ export const LANGUAGES: Language[] = [
   { code: 'fr', name: 'French', flag: '🇫🇷', nativeName: 'Français', ttsLang: 'fr-FR' },
   { code: 'de', name: 'German', flag: '🇩🇪', nativeName: 'Deutsch', ttsLang: 'de-DE' },
   { code: 'hi', name: 'Hindi', flag: '🇮🇳', nativeName: 'हिन्दी', ttsLang: 'hi-IN' },
+  { code: 'bn', name: 'Bengali', flag: '🇧🇩', nativeName: 'বাংলা', ttsLang: 'bn-IN' },
   { code: 'ja', name: 'Japanese', flag: '🇯🇵', nativeName: '日本語', ttsLang: 'ja-JP' },
   { code: 'ko', name: 'Korean', flag: '🇰🇷', nativeName: '한국어', ttsLang: 'ko-KR' },
   { code: 'zh', name: 'Chinese', flag: '🇨🇳', nativeName: '中文 (普通话)', ttsLang: 'zh-CN' },
