@@ -14,7 +14,14 @@ import { LanguagePicker } from './components/controls/LanguagePicker';
 import { RecordButton } from './components/controls/RecordButton';
 import { TranslationCard } from './components/output/TranslationCard';
 import { SettingsModal } from './components/settings/SettingsModal';
-import { Waves, Sparkles, AlertCircle } from 'lucide-react';
+import { Waves, Sparkles, AlertCircle, Send, Wand2 } from 'lucide-react';
+
+const SAMPLE_PROMPTS = [
+  'Greetings human! I am your overlord.',
+  'Where can I find the ultimate pizza?',
+  'Initiating cybernetic system diagnostics.',
+  'Hello world, this is a test of voice power!',
+];
 
 export default function App() {
   // Engine & Preset States
@@ -26,8 +33,9 @@ export default function App() {
   // Status & Transcript States
   const [isListening, setIsListening] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string>('Ready • Tap Mic');
+  const [statusMessage, setStatusMessage] = useState<string>('Ready • Tap Mic to Speak');
   const [interimTranscript, setInterimTranscript] = useState<string>('');
+  const [customInputText, setCustomInputText] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Audio & Data States
@@ -36,10 +44,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [cloudConfig, setCloudConfig] = useState(cloudAiEngine.getConfig());
 
-  // Cached raw audio buffer for re-modulation
-  const currentSynthesizedBuffer = useRef<AudioBuffer | null>(null);
   const stopNativeRecognitionRef = useRef<(() => void) | null>(null);
-
   const activeTone = TONE_PRESETS.find((p) => p.id === selectedToneId) || TONE_PRESETS[0];
 
   // Initialize WebGPU worker callback if WebGPU mode is selected
@@ -54,47 +59,77 @@ export default function App() {
     }
   }, [engineMode]);
 
-  // Main Recording Trigger
+  // Main Push-to-Talk Recording Trigger
   const handleToggleRecord = async () => {
     setErrorMessage(null);
 
     if (isListening) {
-      // STOP RECORDING
+      // User tapped to finish recording
       setIsListening(false);
-      setStatusMessage('Processing audio...');
+      setStatusMessage('Processing your speech...');
 
       if (stopNativeRecognitionRef.current) {
         stopNativeRecognitionRef.current();
         stopNativeRecognitionRef.current = null;
       }
 
-      try {
-        const { buffer, float32 } = await audioEngine.stopRecording();
-        await processCapturedAudio(buffer, float32);
-      } catch (err) {
-        setErrorMessage((err as Error).message || 'Failed to capture audio');
-        setStatusMessage('Ready • Tap Mic');
+      if (engineMode === 'webgpu') {
+        try {
+          const { float32 } = await audioEngine.stopRecording();
+          setStatusMessage('Whisper Neural Transcribing...');
+          const transcript = await webGpuEngine.transcribeAudio(float32);
+          if (transcript.trim()) {
+            await handleProcessSpokenText(transcript.trim());
+          } else {
+            setStatusMessage('No speech heard • Try speaking louder');
+          }
+        } catch (err) {
+          setErrorMessage((err as Error).message || 'Audio capture failed');
+          setStatusMessage('Ready • Tap Mic');
+        }
+      } else {
+        // Native mode finish
+        if (interimTranscript.trim()) {
+          await handleProcessSpokenText(interimTranscript.trim());
+        } else {
+          setStatusMessage('No speech detected • Speak clearly');
+        }
       }
     } else {
       // START RECORDING
       try {
+        nativeEngine.stopSpeaking();
         audioEngine.stopPlayback();
         setIsPlaying(false);
-
-        await audioEngine.startRecording();
-        setIsListening(true);
         setInterimTranscript('');
-        setStatusMessage('Listening to voice...');
 
-        // If in Native mode, use real-time streaming speech recognition
-        if (engineMode === 'native') {
+        if (engineMode === 'webgpu') {
+          // WebGPU requires raw PCM audio bytes for Whisper
+          await audioEngine.startRecording();
+          setIsListening(true);
+          setStatusMessage('Listening (Whisper WebGPU)...');
+        } else {
+          // Native / Cloud mode: Use Android Chrome SpeechRecognizer cleanly without locking mic
+          setIsListening(true);
+          setStatusMessage('Listening... Speak now!');
+
           const stopRec = nativeEngine.startSpeechRecognition(
             sourceLang.ttsLang,
-            (text) => {
+            (text, isFinal) => {
               setInterimTranscript(text);
+              if (isFinal && text.trim()) {
+                setIsListening(false);
+                if (stopNativeRecognitionRef.current) {
+                  stopNativeRecognitionRef.current();
+                  stopNativeRecognitionRef.current = null;
+                }
+                handleProcessSpokenText(text.trim());
+              }
             },
             (err) => {
-              console.warn('Native speech warning:', err);
+              setErrorMessage(err);
+              setIsListening(false);
+              setStatusMessage('Speech error • Try again');
             }
           );
           stopNativeRecognitionRef.current = stopRec;
@@ -102,147 +137,129 @@ export default function App() {
       } catch (err) {
         setErrorMessage(
           (err as Error).message ||
-            'Could not access microphone. Please grant mic permissions in your tablet settings.'
+            'Could not access microphone. Please allow microphone permissions in Chrome settings.'
         );
         setIsListening(false);
-        setStatusMessage('Mic Access Error');
+        setStatusMessage('Mic Access Denied');
       }
     }
   };
 
-  // Process voice -> transcribe -> translate -> modulate
-  const processCapturedAudio = async (
-    originalBuffer: AudioBuffer,
-    float32: Float32Array
-  ) => {
-    let transcript = interimTranscript.trim();
+  // Main Text -> Translation -> Speech Modulation pipeline
+  const handleProcessSpokenText = async (rawText: string) => {
+    const text = rawText.trim();
+    if (!text) {
+      setStatusMessage('No words heard • Try speaking closer');
+      return;
+    }
+
+    setInterimTranscript(text);
 
     try {
-      // Step 1: Speech-to-Text Transcription
-      if (engineMode === 'webgpu' || !transcript) {
-        setStatusMessage('Neural transcribing...');
-        if (engineMode === 'webgpu') {
-          transcript = await webGpuEngine.transcribeAudio(float32);
-        }
-      }
-
-      if (!transcript) {
-        setStatusMessage('No speech detected • Try speaking closer');
-        return;
-      }
-
-      setInterimTranscript(transcript);
-
-      // Step 2: Language Translation
+      // Step 1: Translate text
       setStatusMessage(`Translating to ${targetLang.name}...`);
-      let translatedText = transcript;
+      let translated = text;
 
       if (sourceLang.code !== targetLang.code) {
         if (engineMode === 'cloud') {
-          translatedText = await cloudAiEngine.translateWithStyle(
-            transcript,
+          translated = await cloudAiEngine.translateWithStyle(
+            text,
             sourceLang,
             targetLang,
             selectedToneId
           );
         } else {
-          translatedText = await nativeEngine.translateText(
-            transcript,
+          translated = await nativeEngine.translateText(
+            text,
             sourceLang.code,
             targetLang.code
           );
         }
       }
 
-      // Step 3: Speech Synthesis
-      setStatusMessage('Synthesizing vocal cadence...');
-      const ctx = audioEngine.getContext();
-      let synthBuffer: AudioBuffer;
-
-      if (sourceLang.code === targetLang.code) {
-        // Direct modulation of user's own original vocal recording!
-        synthBuffer = originalBuffer;
-      } else {
-        synthBuffer = await nativeEngine.synthesizeToAudioBuffer(translatedText, targetLang, ctx);
-      }
-      currentSynthesizedBuffer.current = synthBuffer;
-
-      // Step 4: Web Audio DSP Tone Modulation
-      setStatusMessage(`Applying ${activeTone.name} DSP rack...`);
-      const { blob, url, buffer: modulatedBuffer } = await audioEngine.renderModulatedAudio(
-        synthBuffer,
-        selectedToneId
-      );
-
-      // Step 5: Save Result
+      // Step 2: Update UI state with recognized & translated words
       const result: ProcessedAudio = {
         id: `${Date.now()}`,
         timestamp: Date.now(),
-        originalText: transcript,
-        translatedText,
+        originalText: text,
+        translatedText: translated,
         sourceLang,
         targetLang,
         appliedTone: selectedToneId,
-        audioBlobUrl: url,
-        durationSec: blob.size,
       };
 
       setProcessedResult(result);
-      setStatusMessage('Playing modulated voice...');
 
-      // Step 6: Automatically play the modulated voice
-      setIsPlaying(true);
-      audioEngine.playBuffer(modulatedBuffer, () => {
-        setIsPlaying(false);
-        setStatusMessage('Ready • Tap Mic');
-      });
+      // Step 3: Speak real human words with acoustic character tone!
+      playCharacterVoice(translated, targetLang, selectedToneId);
     } catch (err) {
-      setErrorMessage((err as Error).message || 'Audio processing error');
-      setStatusMessage('Error occurred');
-    }
-  };
-
-  // Re-modulate current audio with a new tone preset
-  const handleReModulate = async (toneId: TonePresetId) => {
-    setSelectedToneId(toneId);
-    if (!currentSynthesizedBuffer.current || !processedResult) return;
-
-    try {
-      setStatusMessage(`Re-morphing into ${toneId}...`);
-      const { url, buffer: modulatedBuffer } = await audioEngine.renderModulatedAudio(
-        currentSynthesizedBuffer.current,
-        toneId
-      );
-
-      setProcessedResult({
-        ...processedResult,
-        appliedTone: toneId,
-        audioBlobUrl: url,
-      });
-
-      setIsPlaying(true);
-      audioEngine.playBuffer(modulatedBuffer, () => {
-        setIsPlaying(false);
-        setStatusMessage('Ready • Tap Mic');
-      });
-    } catch (err) {
-      setErrorMessage((err as Error).message || 'Re-modulation failed');
-    }
-  };
-
-  // Play existing modulated audio
-  const handlePlayCurrent = () => {
-    if (!processedResult?.audioBlobUrl) return;
-    setIsPlaying(true);
-    setStatusMessage(`Playing ${activeTone.name}...`);
-    audioEngine.playUrl(processedResult.audioBlobUrl, () => {
-      setIsPlaying(false);
+      setErrorMessage((err as Error).message || 'Processing failed');
       setStatusMessage('Ready • Tap Mic');
-    });
+    }
+  };
+
+  // Speak real words with the character pitch/speed/tone
+  const playCharacterVoice = (
+    text: string,
+    lang: Language,
+    toneId: TonePresetId
+  ) => {
+    nativeEngine.stopSpeaking();
+    audioEngine.stopPlayback();
+
+    const tonePreset = TONE_PRESETS.find((p) => p.id === toneId) || activeTone;
+    setStatusMessage(`Speaking as ${tonePreset.name}...`);
+    setIsPlaying(true);
+
+    // Feed FFT energy into visualizer so orb dances to speech
+    audioEngine.startSpeechVisualizer();
+
+    nativeEngine.speakWithTone(
+      text,
+      lang,
+      toneId,
+      () => {
+        setIsPlaying(true);
+      },
+      () => {
+        setIsPlaying(false);
+        audioEngine.stopSpeechVisualizer();
+        setStatusMessage('Ready • Tap Mic');
+      }
+    );
+  };
+
+  // Re-modulate current translated speech with a different character tone
+  const handleReModulate = (toneId: TonePresetId) => {
+    setSelectedToneId(toneId);
+    if (!processedResult) return;
+
+    const updated = {
+      ...processedResult,
+      appliedTone: toneId,
+    };
+    setProcessedResult(updated);
+
+    playCharacterVoice(
+      processedResult.translatedText,
+      processedResult.targetLang,
+      toneId
+    );
+  };
+
+  const handlePlayCurrent = () => {
+    if (!processedResult) return;
+    playCharacterVoice(
+      processedResult.translatedText,
+      processedResult.targetLang,
+      processedResult.appliedTone
+    );
   };
 
   const handleStopPlayback = () => {
+    nativeEngine.stopSpeaking();
     audioEngine.stopPlayback();
+    audioEngine.stopSpeechVisualizer();
     setIsPlaying(false);
     setStatusMessage('Ready • Tap Mic');
   };
@@ -251,6 +268,14 @@ export default function App() {
     const temp = sourceLang;
     setSourceLang(targetLang);
     setTargetLang(temp);
+  };
+
+  // Submit manual text / sample prompt
+  const handleCustomSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!customInputText.trim()) return;
+    handleProcessSpokenText(customInputText.trim());
+    setCustomInputText('');
   };
 
   return (
@@ -351,10 +376,27 @@ export default function App() {
 
           {/* Live speech preview while speaking */}
           {interimTranscript && isListening && (
-            <div className="p-3 rounded-2xl bg-cyan-950/30 border border-cyan-500/30 text-cyan-200 text-xs font-mono italic text-center">
+            <div className="p-3.5 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-200 text-sm font-medium text-center shadow-lg animate-pulse">
               "{interimTranscript}..."
             </div>
           )}
+
+          {/* Quick Manual Text Input (Type or speak anytime!) */}
+          <form onSubmit={handleCustomSubmit} className="flex gap-2 w-full">
+            <input
+              type="text"
+              value={customInputText}
+              onChange={(e) => setCustomInputText(e.target.value)}
+              placeholder="Or type anything to speak & translate..."
+              className="flex-1 bg-black/40 text-white text-xs font-medium py-2.5 px-3.5 rounded-xl border border-white/10 focus:border-cyan-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              className="px-3 py-2.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 flex items-center justify-center transition-colors"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
 
           {/* Vocal Character Tone Selector Grid */}
           <ToneSelector
@@ -388,6 +430,25 @@ export default function App() {
             onSwap={handleSwapLanguages}
           />
 
+          {/* Quick Fun Test Prompts */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-mono text-white/40 uppercase tracking-wider flex items-center gap-1">
+              <Wand2 className="w-3 h-3 text-purple-400" />
+              <span>Tap a Sample to Hear Instant Voice:</span>
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {SAMPLE_PROMPTS.map((prompt, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => handleProcessSpokenText(prompt)}
+                  className="text-xs bg-white/5 hover:bg-white/10 border border-white/10 hover:border-purple-400/40 text-white/80 hover:text-white px-3 py-1.5 rounded-xl transition-all"
+                >
+                  "{prompt}"
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Modulated Translation Output Card */}
           <TranslationCard
             data={processedResult}
@@ -400,7 +461,7 @@ export default function App() {
 
           {/* Tablet Ergonomics Tip */}
           <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 flex items-center justify-between text-[11px] text-white/40 font-mono">
-            <span>💡 Tip: Select same language to use purely as a voice changer!</span>
+            <span>💡 Select same language to hear your words in funny character tones!</span>
             <span className="text-white/60">Snapdragon 870 Ready</span>
           </div>
         </section>

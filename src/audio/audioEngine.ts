@@ -9,6 +9,50 @@ class AudioEngine {
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
   private activeAudioElement: HTMLAudioElement | null = null;
+  private speechSimOsc: OscillatorNode | null = null;
+  private speechSimGain: GainNode | null = null;
+
+  public startSpeechVisualizer(): void {
+    const ctx = this.initContext();
+    if (!this.analyser) return;
+
+    this.stopSpeechVisualizer();
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(160, ctx.currentTime);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+
+    osc.connect(gain);
+    // Connect to analyser only (NOT to destination) so visualizer dances while TTS speaks
+    gain.connect(this.analyser);
+    osc.start();
+
+    this.speechSimOsc = osc;
+    this.speechSimGain = gain;
+  }
+
+  public stopSpeechVisualizer(): void {
+    if (this.speechSimOsc) {
+      try {
+        this.speechSimOsc.stop();
+        this.speechSimOsc.disconnect();
+      } catch {
+        // Ignore
+      }
+      this.speechSimOsc = null;
+    }
+    if (this.speechSimGain) {
+      try {
+        this.speechSimGain.disconnect();
+      } catch {
+        // Ignore
+      }
+      this.speechSimGain = null;
+    }
+  }
 
   public initContext(): AudioContext {
     if (!this.ctx || this.ctx.state === 'closed') {

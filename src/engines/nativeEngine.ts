@@ -69,36 +69,44 @@ export class NativeEngine {
     this.recognition = recognition;
     this.isListening = true;
 
-    recognition.continuous = true;
+    // Use continuous: false for maximum responsiveness on Android tablets
+    recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = langCode;
 
-    let finalTranscript = '';
+    let receivedText = '';
 
     recognition.onresult = (event: ISpeechRecognitionEvent) => {
-      let interimTranscript = '';
+      let interim = '';
       for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
+        const item = event.results[i];
+        if (item.isFinal) {
+          receivedText = item[0].transcript;
         } else {
-          interimTranscript += event.results[i][0].transcript;
+          interim += item[0].transcript;
         }
       }
 
-      const currentText = (finalTranscript + ' ' + interimTranscript).trim();
-      onResult(currentText, false);
+      const current = (receivedText || interim).trim();
+      if (current) {
+        onResult(current, false);
+      }
     };
 
     recognition.onerror = (event: ISpeechRecognitionErrorEvent) => {
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        onError(event.error || 'Speech recognition error');
+      if (event.error === 'no-speech') {
+        onError('No speech detected. Please speak closer to the mic.');
+      } else if (event.error === 'not-allowed') {
+        onError('Microphone permission denied. Please allow microphone access in Chrome settings.');
+      } else if (event.error !== 'aborted') {
+        onError(`Speech error: ${event.error}`);
       }
     };
 
     recognition.onend = () => {
       this.isListening = false;
-      if (finalTranscript.trim()) {
-        onResult(finalTranscript.trim(), true);
+      if (receivedText.trim()) {
+        onResult(receivedText.trim(), true);
       }
     };
 
@@ -110,8 +118,8 @@ export class NativeEngine {
 
     return () => {
       this.stop();
-      if (finalTranscript.trim()) {
-        onResult(finalTranscript.trim(), true);
+      if (receivedText.trim()) {
+        onResult(receivedText.trim(), true);
       }
     };
   }
@@ -137,20 +145,17 @@ export class NativeEngine {
     if (sourceLang === targetLang) return text;
 
     try {
-      // Fast, free public Google Translate API (used in web apps without server)
       const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Translation request failed');
       const data = await res.json();
       
-      // Response format: [[["Translated text", "Original text", ...]]]
       if (data && data[0]) {
         const translated = data[0].map((item: unknown[]) => item[0]).join('');
         return translated;
       }
       return text;
     } catch {
-      // Fallback: MyMemory Translation API
       try {
         const fallbackUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`;
         const fbRes = await fetch(fallbackUrl);
@@ -165,27 +170,60 @@ export class NativeEngine {
     }
   }
 
-  // Synthesize speech using Google/Android TTS and return playable audio stream
-  public async speakText(
+  // Speak real human words with acoustic vocal tone modulation
+  public speakWithTone(
     text: string,
     lang: Language,
+    toneId: string,
     onStart?: () => void,
     onEnd?: () => void
-  ): Promise<void> {
+  ): void {
     if (!window.speechSynthesis) {
-      throw new Error('SpeechSynthesis not supported');
+      throw new Error('SpeechSynthesis not supported on this device');
     }
 
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang.ttsLang;
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
+
+    // Apply vocal tone character presets
+    switch (toneId) {
+      case 'demon':
+        utterance.pitch = 0.25; // Deep sub-bass growl
+        utterance.rate = 0.8;   // Slow menacing cadence
+        break;
+      case 'chipmunk':
+        utterance.pitch = 1.95; // High-pitched squeak
+        utterance.rate = 1.35;  // Hyper fast
+        break;
+      case 'robot':
+        utterance.pitch = 0.55; // Monotone robot
+        utterance.rate = 0.95;
+        break;
+      case 'walkietalkie':
+        utterance.pitch = 1.05;
+        utterance.rate = 1.15;
+        break;
+      case 'ethereal':
+        utterance.pitch = 1.35; // Airy high whisper
+        utterance.rate = 0.75;  // Slow dreamy tempo
+        break;
+      case 'alien':
+        utterance.pitch = 1.7;  // High alien screech
+        utterance.rate = 1.0;
+        break;
+      default:
+        utterance.pitch = 1.0;
+        utterance.rate = 1.0;
+        break;
+    }
 
     // Pick best matching voice on device
     const voices = window.speechSynthesis.getVoices();
-    const voice = voices.find((v) => v.lang.startsWith(lang.code) || v.lang === lang.ttsLang);
+    const voice = voices.find(
+      (v) => v.lang === lang.ttsLang || v.lang.startsWith(lang.code)
+    );
     if (voice) {
       utterance.voice = voice;
     }
@@ -205,52 +243,10 @@ export class NativeEngine {
     window.speechSynthesis.speak(utterance);
   }
 
-  // Synthesize audio to AudioBuffer (using Google TTS audio stream for DSP modulation)
-  public async synthesizeToAudioBuffer(
-    text: string,
-    lang: Language,
-    ctx: AudioContext
-  ): Promise<AudioBuffer> {
-    // We fetch Google Translate TTS audio mp3 directly
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${lang.code}&client=tw-ob`;
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('TTS fetch error');
-      const arrayBuffer = await response.arrayBuffer();
-      return await ctx.decodeAudioData(arrayBuffer);
-    } catch {
-      // If CORS or offline, create a synthetic voice waveform buffer as fallback
-      return this.generateSyntheticVocalBuffer(text, ctx);
+  public stopSpeaking(): void {
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
     }
-  }
-
-  // Algorithmic speech phonetic sound generator fallback
-  private generateSyntheticVocalBuffer(text: string, ctx: AudioContext): AudioBuffer {
-    const duration = Math.max(1, text.length * 0.08);
-    const sampleRate = ctx.sampleRate;
-    const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
-    const data = buffer.getChannelData(0);
-
-    let phase = 0;
-    const baseFreq = 140; // Fundamental vocal frequency
-
-    for (let i = 0; i < data.length; i++) {
-      const t = i / sampleRate;
-      // Speech syllable modulation envelope
-      const envelope = 0.5 + 0.5 * Math.sin(t * 8 * Math.PI);
-      const freq = baseFreq + 20 * Math.sin(t * 3);
-      phase += (2 * Math.PI * freq) / sampleRate;
-
-      // Vocal buzz with harmonic overtones
-      const sample =
-        0.6 * Math.sin(phase) +
-        0.25 * Math.sin(phase * 2) +
-        0.15 * Math.sin(phase * 3);
-
-      data[i] = sample * envelope * 0.4;
-    }
-
-    return buffer;
   }
 }
 
