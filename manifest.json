@@ -1,0 +1,19 @@
+{
+  "name": "Putta's Voice Game",
+  "short_name": "PuttaVoice",
+  "description": "Voice modulating, speech translating, and audio morphing progressive web app.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07080f",
+  "theme_color": "#07080f",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
