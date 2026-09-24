@@ -14,7 +14,7 @@ import { LanguagePicker } from './components/controls/LanguagePicker';
 import { RecordButton } from './components/controls/RecordButton';
 import { TranslationCard } from './components/output/TranslationCard';
 import { SettingsModal } from './components/settings/SettingsModal';
-import { Waves, Sparkles, AlertCircle, Send, Wand2 } from 'lucide-react';
+import { Waves, Sparkles, AlertCircle, Send, Play, Wand2 } from 'lucide-react';
 
 const SAMPLE_PROMPTS = [
   'Greetings human! I am your overlord.',
@@ -44,7 +44,10 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [cloudConfig, setCloudConfig] = useState(cloudAiEngine.getConfig());
 
+  // Keep last recorded audio buffer for re-morphing
+  const lastRecordedBufferRef = useRef<AudioBuffer | null>(null);
   const stopNativeRecognitionRef = useRef<(() => void) | null>(null);
+
   const activeTone = TONE_PRESETS.find((p) => p.id === selectedToneId) || TONE_PRESETS[0];
 
   // Initialize WebGPU worker callback if WebGPU mode is selected
@@ -63,37 +66,74 @@ export default function App() {
   const handleToggleRecord = async () => {
     setErrorMessage(null);
 
+    // Sync unlock AudioContext immediately on touch (crucial for mobile iOS & Android)
+    audioEngine.initContext();
+
     if (isListening) {
-      // User tapped to finish recording
+      // USER TAPPED TO STOP RECORDING
       setIsListening(false);
-      setStatusMessage('Processing your speech...');
+      setStatusMessage('Processing your voice...');
 
       if (stopNativeRecognitionRef.current) {
-        stopNativeRecognitionRef.current();
+        try {
+          stopNativeRecognitionRef.current();
+        } catch {
+          // Ignore
+        }
         stopNativeRecognitionRef.current = null;
       }
 
-      if (engineMode === 'webgpu') {
-        try {
-          const { float32 } = await audioEngine.stopRecording();
-          setStatusMessage('Whisper Neural Transcribing...');
-          const transcript = await webGpuEngine.transcribeAudio(float32);
-          if (transcript.trim()) {
-            await handleProcessSpokenText(transcript.trim());
-          } else {
-            setStatusMessage('No speech heard • Try speaking louder');
+      try {
+        const { buffer, float32 } = await audioEngine.stopRecording();
+        lastRecordedBufferRef.current = buffer;
+
+        let transcript = interimTranscript.trim();
+
+        // If WebGPU mode is selected or if native STT was empty, try Whisper
+        if (engineMode === 'webgpu' || (!transcript && engineMode === 'cloud')) {
+          setStatusMessage('Neural transcribing...');
+          try {
+            transcript = await webGpuEngine.transcribeAudio(float32);
+          } catch {
+            // Fall through to direct voice changer
           }
-        } catch (err) {
-          setErrorMessage((err as Error).message || 'Audio capture failed');
-          setStatusMessage('Ready • Tap Mic');
         }
-      } else {
-        // Native mode finish
-        if (interimTranscript.trim()) {
-          await handleProcessSpokenText(interimTranscript.trim());
+
+        if (transcript) {
+          // We have recognized words! Proceed to translation & character speech
+          await handleProcessSpokenText(transcript);
         } else {
-          setStatusMessage('No speech detected • Speak clearly');
+          // Speech-to-text was empty or blocked by mobile OS:
+          // Immediately modulate the user's REAL RECORDED VOICE through the DSP rack!
+          setStatusMessage(`Morphing your voice into ${activeTone.name}...`);
+          const { blob, url, buffer: modulatedBuffer } = await audioEngine.renderModulatedAudio(
+            buffer,
+            selectedToneId
+          );
+
+          const result: ProcessedAudio = {
+            id: `${Date.now()}`,
+            timestamp: Date.now(),
+            originalText: 'Your Spoken Voice (Direct Audio Modulation)',
+            translatedText: `Voice morphed with ${activeTone.name} DSP effects`,
+            sourceLang,
+            targetLang,
+            appliedTone: selectedToneId,
+            audioBlobUrl: url,
+            durationSec: blob.size,
+          };
+
+          setProcessedResult(result);
+          setIsPlaying(true);
+          setStatusMessage(`Playing ${activeTone.name}...`);
+          audioEngine.playBuffer(modulatedBuffer, () => {
+            setIsPlaying(false);
+            setStatusMessage('Ready • Tap Mic to Speak');
+          });
         }
+      } catch (err) {
+        setErrorMessage((err as Error).message || 'Audio capture failed');
+        setStatusMessage('Ready • Tap Mic');
       }
     } else {
       // START RECORDING
@@ -103,36 +143,31 @@ export default function App() {
         setIsPlaying(false);
         setInterimTranscript('');
 
-        if (engineMode === 'webgpu') {
-          // WebGPU requires raw PCM audio bytes for Whisper
-          await audioEngine.startRecording();
-          setIsListening(true);
-          setStatusMessage('Listening (Whisper WebGPU)...');
-        } else {
-          // Native / Cloud mode: Use Android Chrome SpeechRecognizer cleanly without locking mic
-          setIsListening(true);
-          setStatusMessage('Listening... Speak now!');
+        // 1. ALWAYS open microphone with Web Audio so Aether Fluid Orb dances and records!
+        await audioEngine.startRecording();
+        setIsListening(true);
+        setStatusMessage('Listening to voice... Speak now!');
 
-          const stopRec = nativeEngine.startSpeechRecognition(
-            sourceLang.ttsLang,
-            (text, isFinal) => {
-              setInterimTranscript(text);
-              if (isFinal && text.trim()) {
-                setIsListening(false);
-                if (stopNativeRecognitionRef.current) {
-                  stopNativeRecognitionRef.current();
-                  stopNativeRecognitionRef.current = null;
+        // 2. Start browser Speech Recognition in background for live streaming transcript
+        if (engineMode !== 'webgpu') {
+          try {
+            const stopRec = nativeEngine.startSpeechRecognition(
+              sourceLang.ttsLang,
+              (text, isFinal) => {
+                setInterimTranscript(text);
+                if (isFinal && text.trim()) {
+                  // Captured final phrase
                 }
-                handleProcessSpokenText(text.trim());
+              },
+              (err) => {
+                // Speech recognition warning (doesn't break direct audio recording)
+                console.warn('Native speech notice:', err);
               }
-            },
-            (err) => {
-              setErrorMessage(err);
-              setIsListening(false);
-              setStatusMessage('Speech error • Try again');
-            }
-          );
-          stopNativeRecognitionRef.current = stopRec;
+            );
+            stopNativeRecognitionRef.current = stopRec;
+          } catch {
+            // Speech recognition not available, will use direct voice changer
+          }
         }
       } catch (err) {
         setErrorMessage(
@@ -148,15 +183,12 @@ export default function App() {
   // Main Text -> Translation -> Speech Modulation pipeline
   const handleProcessSpokenText = async (rawText: string) => {
     const text = rawText.trim();
-    if (!text) {
-      setStatusMessage('No words heard • Try speaking closer');
-      return;
-    }
+    if (!text) return;
 
     setInterimTranscript(text);
 
     try {
-      // Step 1: Translate text
+      // Step 1: Translate text if needed
       setStatusMessage(`Translating to ${targetLang.name}...`);
       let translated = text;
 
@@ -177,7 +209,7 @@ export default function App() {
         }
       }
 
-      // Step 2: Update UI state with recognized & translated words
+      // Step 2: Update UI state
       const result: ProcessedAudio = {
         id: `${Date.now()}`,
         timestamp: Date.now(),
@@ -190,7 +222,7 @@ export default function App() {
 
       setProcessedResult(result);
 
-      // Step 3: Speak real human words with acoustic character tone!
+      // Step 3: Speak real human words with acoustic character tone
       playCharacterVoice(translated, targetLang, selectedToneId);
     } catch (err) {
       setErrorMessage((err as Error).message || 'Processing failed');
@@ -224,13 +256,31 @@ export default function App() {
       () => {
         setIsPlaying(false);
         audioEngine.stopSpeechVisualizer();
-        setStatusMessage('Ready • Tap Mic');
+        setStatusMessage('Ready • Tap Mic to Speak');
       }
     );
   };
 
-  // Re-modulate current translated speech with a different character tone
-  const handleReModulate = (toneId: TonePresetId) => {
+  // Instant Demo: Preview what any character tone sounds like with 1 tap!
+  const handlePlayToneDemo = (toneId: TonePresetId) => {
+    setSelectedToneId(toneId);
+    const preset = TONE_PRESETS.find((p) => p.id === toneId) || activeTone;
+    const demoPhrases: Record<TonePresetId, string> = {
+      demon: 'I am the ancient Titan demon! Bow before my power!',
+      chipmunk: 'Hey look at me! I sound super fast and squeaky!',
+      robot: 'System online. Human voice synthesis protocol initiated.',
+      walkietalkie: 'Over and out. Radio transmission loud and clear, 10-4.',
+      ethereal: 'Floating through the cosmic aether of the astral realm...',
+      alien: 'Greetings Earth creature, we have arrived from galaxy 9.',
+      original: 'This is clean natural voice in high definition audio.',
+    };
+
+    const phrase = demoPhrases[toneId] || `Testing ${preset.name} voice.`;
+    handleProcessSpokenText(phrase);
+  };
+
+  // Re-modulate current translated speech or audio buffer with a new tone
+  const handleReModulate = async (toneId: TonePresetId) => {
     setSelectedToneId(toneId);
     if (!processedResult) return;
 
@@ -240,20 +290,47 @@ export default function App() {
     };
     setProcessedResult(updated);
 
-    playCharacterVoice(
-      processedResult.translatedText,
-      processedResult.targetLang,
-      toneId
-    );
+    // If we have text, speak with new tone
+    if (processedResult.translatedText && !processedResult.translatedText.startsWith('Voice morphed with')) {
+      playCharacterVoice(
+        processedResult.translatedText,
+        processedResult.targetLang,
+        toneId
+      );
+    } else if (lastRecordedBufferRef.current) {
+      // Re-modulate the raw recorded audio buffer
+      const { blob, url, buffer: modulatedBuffer } = await audioEngine.renderModulatedAudio(
+        lastRecordedBufferRef.current,
+        toneId
+      );
+      setProcessedResult({
+        ...updated,
+        audioBlobUrl: url,
+        durationSec: blob.size,
+      });
+      setIsPlaying(true);
+      audioEngine.playBuffer(modulatedBuffer, () => {
+        setIsPlaying(false);
+        setStatusMessage('Ready • Tap Mic to Speak');
+      });
+    }
   };
 
   const handlePlayCurrent = () => {
     if (!processedResult) return;
-    playCharacterVoice(
-      processedResult.translatedText,
-      processedResult.targetLang,
-      processedResult.appliedTone
-    );
+    if (processedResult.audioBlobUrl) {
+      setIsPlaying(true);
+      audioEngine.playUrl(processedResult.audioBlobUrl, () => {
+        setIsPlaying(false);
+        setStatusMessage('Ready • Tap Mic to Speak');
+      });
+    } else {
+      playCharacterVoice(
+        processedResult.translatedText,
+        processedResult.targetLang,
+        processedResult.appliedTone
+      );
+    }
   };
 
   const handleStopPlayback = () => {
@@ -261,7 +338,7 @@ export default function App() {
     audioEngine.stopPlayback();
     audioEngine.stopSpeechVisualizer();
     setIsPlaying(false);
-    setStatusMessage('Ready • Tap Mic');
+    setStatusMessage('Ready • Tap Mic to Speak');
   };
 
   const handleSwapLanguages = () => {
@@ -333,7 +410,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Studio Decks (Tablet Landscape 2-Column Deck) */}
+      {/* Main Studio Decks (Tablet Landscape 2-Column Deck / Stacked Mobile) */}
       <main className="studio-decks">
         {/* Left Studio Deck: Visualizer, Mic & Tone Presets */}
         <section className="deck-panel">
@@ -343,12 +420,12 @@ export default function App() {
               <span>Aether Fluid Core</span>
             </span>
             <span className="text-[11px] font-mono text-cyan-400/80 bg-cyan-950/40 px-2.5 py-0.5 rounded-full border border-cyan-500/30">
-              144 FPS Engine
+              {isListening ? '● REC ACTIVE' : '144 FPS Engine'}
             </span>
           </div>
 
           {/* 144Hz Fluid Orb Canvas */}
-          <div className="w-full h-64 md:h-72 rounded-3xl bg-black/40 border border-white/10 relative overflow-hidden flex items-center justify-center shadow-inner">
+          <div className="w-full h-60 sm:h-64 md:h-72 rounded-3xl bg-black/40 border border-white/10 relative overflow-hidden flex items-center justify-center shadow-inner">
             <AetherFluidOrb
               analyser={audioEngine.analyser}
               activeTone={activeTone}
@@ -381,18 +458,55 @@ export default function App() {
             </div>
           )}
 
-          {/* Quick Manual Text Input (Type or speak anytime!) */}
-          <form onSubmit={handleCustomSubmit} className="flex gap-2 w-full">
+          {/* Quick Instant Demos (Hear tones with 1 tap!) */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-mono text-white/40 uppercase tracking-wider">
+              Instant Tone Demos (Tap to Test Sound):
+            </span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+              <button
+                onClick={() => handlePlayToneDemo('demon')}
+                className="py-1.5 px-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 text-xs font-semibold flex items-center justify-center gap-1 transition-all"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                <span>👹 Demon</span>
+              </button>
+              <button
+                onClick={() => handlePlayToneDemo('chipmunk')}
+                className="py-1.5 px-2 rounded-xl bg-pink-500/10 hover:bg-pink-500/20 border border-pink-500/30 text-pink-300 text-xs font-semibold flex items-center justify-center gap-1 transition-all"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                <span>🐿️ Chipmunk</span>
+              </button>
+              <button
+                onClick={() => handlePlayToneDemo('robot')}
+                className="py-1.5 px-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1 transition-all"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                <span>🤖 Robot</span>
+              </button>
+              <button
+                onClick={() => handlePlayToneDemo('walkietalkie')}
+                className="py-1.5 px-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center justify-center gap-1 transition-all"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                <span>📻 Radio</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Manual Text Input */}
+          <form onSubmit={handleCustomSubmit} className="flex gap-2 w-full mt-1">
             <input
               type="text"
               value={customInputText}
               onChange={(e) => setCustomInputText(e.target.value)}
-              placeholder="Or type anything to speak & translate..."
+              placeholder="Or type any text to speak & translate..."
               className="flex-1 bg-black/40 text-white text-xs font-medium py-2.5 px-3.5 rounded-xl border border-white/10 focus:border-cyan-400 focus:outline-none"
             />
             <button
               type="submit"
-              className="px-3 py-2.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 flex items-center justify-center transition-colors"
+              className="px-3.5 py-2.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 flex items-center justify-center transition-colors"
             >
               <Send className="w-4 h-4" />
             </button>
@@ -434,14 +548,14 @@ export default function App() {
           <div className="flex flex-col gap-1.5">
             <span className="text-[11px] font-mono text-white/40 uppercase tracking-wider flex items-center gap-1">
               <Wand2 className="w-3 h-3 text-purple-400" />
-              <span>Tap a Sample to Hear Instant Voice:</span>
+              <span>Tap a Sample Sentence to Speak & Translate:</span>
             </span>
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_PROMPTS.map((prompt, idx) => (
                 <button
                   key={idx}
                   onClick={() => handleProcessSpokenText(prompt)}
-                  className="text-xs bg-white/5 hover:bg-white/10 border border-white/10 hover:border-purple-400/40 text-white/80 hover:text-white px-3 py-1.5 rounded-xl transition-all"
+                  className="text-xs bg-white/5 hover:bg-white/10 border border-white/10 hover:border-purple-400/40 text-white/80 hover:text-white px-3 py-1.5 rounded-xl transition-all text-left"
                 >
                   "{prompt}"
                 </button>
@@ -459,10 +573,10 @@ export default function App() {
             activeTone={activeTone}
           />
 
-          {/* Tablet Ergonomics Tip */}
-          <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 flex items-center justify-between text-[11px] text-white/40 font-mono">
-            <span>💡 Select same language to hear your words in funny character tones!</span>
-            <span className="text-white/60">Snapdragon 870 Ready</span>
+          {/* Tablet & Mobile Tip */}
+          <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 flex flex-col sm:flex-row items-start sm:items-center justify-between text-[11px] text-white/40 font-mono gap-1">
+            <span>💡 Select same language to hear your voice morphed directly!</span>
+            <span className="text-white/60">Android & iOS Touch Ready</span>
           </div>
         </section>
       </main>

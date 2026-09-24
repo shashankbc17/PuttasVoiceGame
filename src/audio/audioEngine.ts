@@ -92,13 +92,33 @@ class AudioEngine {
       this.micSource.connect(this.analyser);
     }
 
-    // Capture audio blob via MediaRecorder
-    this.mediaRecorder = new MediaRecorder(this.micStream, {
-      mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4',
-    });
+    // Capture audio blob via MediaRecorder with mobile-safe candidate detection
+    try {
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/aac',
+        'audio/ogg;codecs=opus',
+      ];
+      let selectedMime = '';
+      if (typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function') {
+        for (const type of candidates) {
+          if (MediaRecorder.isTypeSupported(type)) {
+            selectedMime = type;
+            break;
+          }
+        }
+      }
+      this.mediaRecorder = selectedMime
+        ? new MediaRecorder(this.micStream, { mimeType: selectedMime })
+        : new MediaRecorder(this.micStream);
+    } catch {
+      this.mediaRecorder = new MediaRecorder(this.micStream);
+    }
 
     this.mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
+      if (e.data && e.data.size > 0) {
         this.recordedChunks.push(e.data);
       }
     };
@@ -128,6 +148,11 @@ class AudioEngine {
             this.micSource = null;
           }
 
+          if (this.recordedChunks.length === 0 || blob.size < 100) {
+            reject(new Error('Audio clip was too short. Speak for at least 1-2 seconds.'));
+            return;
+          }
+
           const arrayBuffer = await blob.arrayBuffer();
           const ctx = this.getContext();
           const buffer = await ctx.decodeAudioData(arrayBuffer);
@@ -141,7 +166,11 @@ class AudioEngine {
         }
       };
 
-      this.mediaRecorder.stop();
+      if (this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop();
+      } else {
+        reject(new Error('Recording was not active'));
+      }
     });
   }
 
