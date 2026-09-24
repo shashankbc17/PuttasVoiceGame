@@ -25,7 +25,7 @@ const SAMPLE_PROMPTS = [
 
 export default function App() {
   // Engine & Preset States
-  const [engineMode, setEngineMode] = useState<EngineMode>('native');
+  const [engineMode, setEngineMode] = useState<EngineMode>('cloud');
   const [selectedToneId, setSelectedToneId] = useState<TonePresetId>('demon');
   const [sourceLang, setSourceLang] = useState<Language>(LANGUAGES[0]); // English
   const [targetLang, setTargetLang] = useState<Language>(LANGUAGES[1]); // Spanish
@@ -194,17 +194,26 @@ export default function App() {
 
     try {
       // Step 1: Translate text if needed
-      setStatusMessage(`Translating to ${targetLang.name}...`);
+      setStatusMessage(`Translating to ${targetLang.name} (Gemini)...`);
       let translated = text;
 
       if (sourceLang.code !== targetLang.code) {
-        if (engineMode === 'cloud') {
-          translated = await cloudAiEngine.translateWithStyle(
-            text,
-            sourceLang,
-            targetLang,
-            selectedToneId
-          );
+        if (engineMode === 'cloud' || cloudAiEngine.hasApiKey()) {
+          try {
+            translated = await cloudAiEngine.translateWithStyle(
+              text,
+              sourceLang,
+              targetLang,
+              selectedToneId
+            );
+          } catch (cloudErr) {
+            console.warn('Cloud translation fallback to native:', cloudErr);
+            translated = await nativeEngine.translateText(
+              text,
+              sourceLang.code,
+              targetLang.code
+            );
+          }
         } else {
           translated = await nativeEngine.translateText(
             text,
@@ -394,17 +403,26 @@ export default function App() {
     }
 
     try {
-      setStatusMessage(`Translating to ${newTarget.name}...`);
+      setStatusMessage(`Translating to ${newTarget.name} (Gemini)...`);
       let translated = textToTranslate;
 
       if (sourceLang.code !== newTarget.code) {
-        if (engineMode === 'cloud') {
-          translated = await cloudAiEngine.translateWithStyle(
-            textToTranslate,
-            sourceLang,
-            newTarget,
-            selectedToneId
-          );
+        if (engineMode === 'cloud' || cloudAiEngine.hasApiKey()) {
+          try {
+            translated = await cloudAiEngine.translateWithStyle(
+              textToTranslate,
+              sourceLang,
+              newTarget,
+              selectedToneId
+            );
+          } catch (cloudErr) {
+            console.warn('Cloud translation fallback to native:', cloudErr);
+            translated = await nativeEngine.translateText(
+              textToTranslate,
+              sourceLang.code,
+              newTarget.code
+            );
+          }
         } else {
           translated = await nativeEngine.translateText(
             textToTranslate,
@@ -450,12 +468,30 @@ export default function App() {
     const textToTranslate = persistedTranslatedText || persistedSpokenText;
     if (textToTranslate && !textToTranslate.startsWith('Voice morphed with')) {
       try {
-        setStatusMessage(`Translating to ${newTarget.name}...`);
-        const reversed = await nativeEngine.translateText(
-          textToTranslate,
-          newSource.code,
-          newTarget.code
-        );
+        setStatusMessage(`Translating to ${newTarget.name} (Gemini)...`);
+        let reversed = textToTranslate;
+        if (engineMode === 'cloud' || cloudAiEngine.hasApiKey()) {
+          try {
+            reversed = await cloudAiEngine.translateWithStyle(
+              textToTranslate,
+              newSource,
+              newTarget,
+              selectedToneId
+            );
+          } catch {
+            reversed = await nativeEngine.translateText(
+              textToTranslate,
+              newSource.code,
+              newTarget.code
+            );
+          }
+        } else {
+          reversed = await nativeEngine.translateText(
+            textToTranslate,
+            newSource.code,
+            newTarget.code
+          );
+        }
 
         setPersistedSpokenText(textToTranslate);
         setPersistedTranslatedText(reversed);

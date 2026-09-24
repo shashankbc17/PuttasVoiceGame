@@ -17,7 +17,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [provider, setProvider] = useState<'gemini' | 'openai'>(config.provider || 'gemini');
   const [apiKey, setApiKey] = useState(config.apiKey || '');
-  const [model, setModel] = useState(config.model || 'gemini-2.0-flash');
+  const [model, setModel] = useState(config.model || 'gemini-3.6-flash');
   const [savedToast, setSavedToast] = useState(false);
 
   if (!isOpen) return null;
@@ -48,7 +48,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h3 className="font-semibold text-white text-base">Engine Configuration</h3>
-              <p className="text-xs text-white/50">Cloud AI credentials & tablet acceleration</p>
+              <p className="text-xs text-white/50">Google Gemini & tablet acceleration</p>
             </div>
           </div>
           <button
@@ -87,7 +87,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <button
               onClick={() => {
                 setProvider('gemini');
-                setModel('gemini-2.0-flash');
+                setModel('gemini-3.6-flash');
               }}
               className={`p-3 rounded-2xl border text-left transition-all ${
                 provider === 'gemini'
@@ -95,8 +95,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : 'bg-white/5 border-white/10 text-white/60 hover:text-white'
               }`}
             >
-              <span className="font-semibold text-sm block">Google Gemini</span>
-              <span className="text-[11px] text-white/40">Gemini 2.0 Flash (Fastest)</span>
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-sm block">Google Gemini</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/30 text-purple-200">PRO</span>
+              </div>
+              <span className="text-[11px] text-white/40">Gemini 3.6 Flash (Fastest)</span>
             </button>
 
             <button
@@ -123,19 +126,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Key className="w-3.5 h-3.5 text-purple-400" />
               <span>{provider === 'gemini' ? 'Gemini' : 'OpenAI'} API Key</span>
             </label>
-            <a
-              href={
-                provider === 'gemini'
-                  ? 'https://aistudio.google.com/app/apikey'
-                  : 'https://platform.openai.com/api-keys'
-              }
-              target="_blank"
-              rel="noreferrer"
-              className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
-            >
-              <span>Get Free Key</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
+            <div className="flex items-center gap-2">
+              {apiKey.trim() && (
+                <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  <Check className="w-2.5 h-2.5" /> Ready
+                </span>
+              )}
+              <a
+                href={
+                  provider === 'gemini'
+                    ? 'https://aistudio.google.com/app/apikey'
+                    : 'https://platform.openai.com/api-keys'
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
+              >
+                <span>Get Key</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
           </div>
 
           <input
@@ -143,12 +153,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={
-              provider === 'gemini' ? 'AIzaSy...' : 'sk-proj-...'
+              provider === 'gemini' ? 'AQ.Ab8... or AIzaSy...' : 'sk-proj-...'
             }
             className="w-full bg-black/50 text-white text-sm font-mono p-3.5 rounded-xl border border-white/15 focus:border-purple-400 focus:outline-none"
           />
           <span className="text-[11px] text-white/40">
-            Stored locally in your browser’s encrypted localStorage. Never sent to any external server.
+            Stored locally in your device’s secure localStorage. Powering instant character translations.
           </span>
         </div>
 

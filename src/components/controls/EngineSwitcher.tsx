@@ -64,7 +64,7 @@ export const EngineSwitcher: React.FC<EngineSwitcherProps> = ({
             <span className="font-semibold text-xs tracking-tight">Cloud AI</span>
           </div>
           <span className="text-[10px] text-white/40 font-mono">
-            {hasCloudKey ? 'Gemini 2.0' : 'Key Required'}
+            {hasCloudKey ? 'Gemini 3.6' : 'Key Required'}
           </span>
         </button>
 
