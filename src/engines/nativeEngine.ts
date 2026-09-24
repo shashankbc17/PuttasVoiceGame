@@ -43,6 +43,10 @@ export class NativeEngine {
     return !!(win.SpeechRecognition || win.webkitSpeechRecognition);
   }
 
+  public getIsListening(): boolean {
+    return this.isListening;
+  }
+
   // Listen to microphone and stream interim + final transcript
   public startSpeechRecognition(
     langCode: string,
@@ -125,13 +129,18 @@ export class NativeEngine {
   }
 
   public stop(): void {
-    if (this.recognition && this.isListening) {
+    if (this.recognition) {
       this.isListening = false;
       try {
         this.recognition.stop();
       } catch {
-        // Ignore
+        try {
+          this.recognition.abort();
+        } catch {
+          // Ignore
+        }
       }
+      this.recognition = null;
     }
   }
 

@@ -50,6 +50,7 @@ export default function App() {
   // Cached AudioBuffer of user's voice for re-morphing through DSP
   const lastRecordedBufferRef = useRef<AudioBuffer | null>(null);
   const stopNativeRecognitionRef = useRef<(() => void) | null>(null);
+  const isMediaRecordingRef = useRef<boolean>(false);
 
   const activeTone = TONE_PRESETS.find((p) => p.id === selectedToneId) || TONE_PRESETS[0];
 
@@ -70,7 +71,11 @@ export default function App() {
     setErrorMessage(null);
 
     // Sync unlock AudioContext immediately on touch (crucial for mobile iOS & Android)
-    audioEngine.initContext();
+    try {
+      audioEngine.initContext();
+    } catch {
+      // Ignore
+    }
 
     if (isListening) {
       // USER TAPPED TO STOP RECORDING
@@ -86,25 +91,38 @@ export default function App() {
         stopNativeRecognitionRef.current = null;
       }
 
+      // If speech recognition was active (no MediaRecorder running)
+      const transcript = interimTranscript.trim();
+      if (!isMediaRecordingRef.current) {
+        if (transcript) {
+          await handleProcessSpokenText(transcript);
+        } else {
+          setStatusMessage('No speech detected • Tap Mic to Speak');
+          setTimeout(() => setStatusMessage('Ready • Tap Mic to Speak'), 2000);
+        }
+        return;
+      }
+
+      // If MediaRecorder was active (WebGPU mode or non-STT browser)
       try {
+        isMediaRecordingRef.current = false;
         const { buffer, float32 } = await audioEngine.stopRecording();
         lastRecordedBufferRef.current = buffer;
 
-        let transcript = interimTranscript.trim();
+        let processedText = transcript;
 
-        // If WebGPU mode is selected or if native STT was empty, try Whisper
-        if (engineMode === 'webgpu' || (!transcript && engineMode === 'cloud')) {
-          setStatusMessage('Neural transcribing...');
+        // Only run Whisper in WebGPU mode
+        if (engineMode === 'webgpu') {
+          setStatusMessage('Neural transcribing on WebGPU...');
           try {
-            transcript = await webGpuEngine.transcribeAudio(float32);
-          } catch {
-            // Fall through
+            processedText = await webGpuEngine.transcribeAudio(float32);
+          } catch (e) {
+            console.warn('WebGPU transcription error:', e);
           }
         }
 
-        if (transcript) {
-          // We have recognized words! Proceed to translation & character speech
-          await handleProcessSpokenText(transcript);
+        if (processedText) {
+          await handleProcessSpokenText(processedText);
         } else {
           // Direct voice changer fallback (when STT is blocked on mobile)
           setStatusMessage(`Morphing your voice into ${activeTone.name}...`);
@@ -148,37 +166,50 @@ export default function App() {
         setIsPlaying(false);
         setInterimTranscript('');
 
-        // 1. ALWAYS open microphone with Web Audio so Aether Fluid Orb dances and records
-        await audioEngine.startRecording();
-        setIsListening(true);
-        setStatusMessage('Listening to voice... Speak now!');
+        const useNativeSTT = engineMode !== 'webgpu' && nativeEngine.isSupported();
 
-        // 2. Start browser Speech Recognition in background for live streaming transcript
-        if (engineMode !== 'webgpu') {
-          try {
-            const stopRec = nativeEngine.startSpeechRecognition(
-              sourceLang.ttsLang,
-              (text, isFinal) => {
-                setInterimTranscript(text);
-                if (isFinal && text.trim()) {
-                  // Captured final phrase
-                }
-              },
-              (err) => {
-                console.warn('Native speech notice:', err);
+        if (useNativeSTT) {
+          // PURE SpeechRecognition: No concurrent getUserMedia call!
+          // Completely eliminates mobile Android/iOS mic hardware deadlock & freeze!
+          isMediaRecordingRef.current = false;
+          setIsListening(true);
+          setStatusMessage('Listening to voice... Speak now!');
+
+          const stopRec = nativeEngine.startSpeechRecognition(
+            sourceLang.ttsLang,
+            (text, isFinal) => {
+              setInterimTranscript(text);
+              if (isFinal && text.trim()) {
+                setIsListening(false);
+                handleProcessSpokenText(text.trim());
               }
-            );
-            stopNativeRecognitionRef.current = stopRec;
-          } catch {
-            // Speech recognition not available
-          }
+            },
+            (err) => {
+              console.warn('Native speech notice:', err);
+              if (err.includes('denied') || err.includes('not-allowed')) {
+                setErrorMessage(
+                  'Microphone permission denied. Please allow microphone access in browser settings.'
+                );
+                setIsListening(false);
+                setStatusMessage('Mic Access Denied');
+              }
+            }
+          );
+          stopNativeRecognitionRef.current = stopRec;
+        } else {
+          // Direct Web Audio capture for WebGPU or browsers without native STT
+          isMediaRecordingRef.current = true;
+          await audioEngine.startRecording();
+          setIsListening(true);
+          setStatusMessage('Recording voice... Speak now!');
         }
       } catch (err) {
+        isMediaRecordingRef.current = false;
+        setIsListening(false);
         setErrorMessage(
           (err as Error).message ||
-            'Could not access microphone. Please allow microphone permissions in Chrome/Safari settings.'
+            'Could not access microphone. Please allow microphone permissions in settings.'
         );
-        setIsListening(false);
         setStatusMessage('Mic Access Denied');
       }
     }

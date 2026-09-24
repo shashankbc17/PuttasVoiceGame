@@ -57,12 +57,20 @@ class AudioEngine {
   public initContext(): AudioContext {
     if (!this.ctx || this.ctx.state === 'closed') {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.ctx = new AudioCtx({ sampleRate: 44100 });
+      try {
+        this.ctx = new AudioCtx();
+      } catch {
+        try {
+          this.ctx = new AudioCtx({ sampleRate: 44100 });
+        } catch {
+          this.ctx = new AudioCtx();
+        }
+      }
     }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
     }
-    if (!this.analyser) {
+    if (this.ctx && !this.analyser) {
       this.analyser = this.ctx.createAnalyser();
       this.analyser.fftSize = 512;
       this.analyser.smoothingTimeConstant = 0.8;

@@ -33,9 +33,10 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
 
       {/* Main Touch Button */}
       <button
+        type="button"
         onClick={onClick}
         disabled={disabled}
-        className={`relative z-10 w-20 h-20 md:w-24 md:h-24 rounded-full flex flex-col items-center justify-center transition-all duration-300 shadow-2xl active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+        className={`relative z-10 w-20 h-20 md:w-24 md:h-24 rounded-full flex flex-col items-center justify-center transition-all duration-300 shadow-2xl active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation select-none ${
           isListening
             ? 'scale-105'
             : 'hover:scale-105'

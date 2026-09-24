@@ -21,12 +21,18 @@ export const AudioSpectrumWave: React.FC<AudioSpectrumWaveProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    let width = 0;
+    let height = 0;
+
     const updateSize = () => {
       const rect = canvas.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+      if (width === 0 || height === 0) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
     updateSize();
@@ -37,9 +43,10 @@ export const AudioSpectrumWave: React.FC<AudioSpectrumWaveProps> = ({
     const smoothedHeights = new Float32Array(barCount).fill(4);
 
     const render = () => {
-      const rect = canvas.getBoundingClientRect();
-      const width = rect.width;
-      const height = rect.height;
+      if (width === 0 || height === 0) {
+        animFrameRef.current = requestAnimationFrame(render);
+        return;
+      }
 
       ctx.clearRect(0, 0, width, height);
 
@@ -78,18 +85,13 @@ export const AudioSpectrumWave: React.FC<AudioSpectrumWaveProps> = ({
 
         ctx.fillStyle = gradient;
         ctx.beginPath();
-        // Pill shaped bars
         const radius = barWidth / 2;
-        ctx.roundRect(x, y, barWidth, barH, radius);
-        ctx.fill();
-
-        // Neon Glow on taller peaks
-        if (barH > height * 0.45) {
-          ctx.shadowColor = activeTone.primaryColor;
-          ctx.shadowBlur = 10;
-          ctx.fill();
-          ctx.shadowBlur = 0;
+        if (typeof ctx.roundRect === 'function') {
+          ctx.roundRect(x, y, barWidth, barH, radius);
+        } else {
+          ctx.rect(x, y, barWidth, barH);
         }
+        ctx.fill();
       }
 
       animFrameRef.current = requestAnimationFrame(render);

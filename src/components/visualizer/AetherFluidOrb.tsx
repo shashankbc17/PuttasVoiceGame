@@ -25,13 +25,19 @@ export const AetherFluidOrb: React.FC<AetherFluidOrbProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Handle 2.8K High-DPI display scaling
+    let width = 0;
+    let height = 0;
+
+    // Handle High-DPI display scaling smoothly without layout thrashing
     const updateSize = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2.5); // Crisp on 2.8K screen
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
+      width = rect.width;
+      height = rect.height;
+      if (width === 0 || height === 0) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
     updateSize();
@@ -57,12 +63,14 @@ export const AetherFluidOrb: React.FC<AetherFluidOrbProps> = ({
     }));
 
     const render = (time: number) => {
+      if (width === 0 || height === 0) {
+        animFrameRef.current = requestAnimationFrame(render);
+        return;
+      }
+
       const dt = Math.min((time - lastTime) / 1000, 0.1);
       lastTime = time;
 
-      const rect = canvas.getBoundingClientRect();
-      const width = rect.width;
-      const height = rect.height;
       const centerX = width / 2;
       const centerY = height / 2;
 
@@ -75,6 +83,9 @@ export const AetherFluidOrb: React.FC<AetherFluidOrbProps> = ({
           sum += dataArray[i];
         }
         currentVolume = sum / (40 * 255); // 0 to 1
+      } else if (isListening) {
+        // Natural pulsing visualizer while speech recognizer is active
+        currentVolume = 0.28 + Math.sin(time / 160) * 0.12;
       }
 
       // Smooth volume transitions with responsive spring
@@ -92,7 +103,7 @@ export const AetherFluidOrb: React.FC<AetherFluidOrbProps> = ({
       // Base radius scaled to container
       const baseRadius = Math.min(width, height) * 0.26 * (1 + effectiveVol * 0.4);
 
-      // 1. Draw outer ambient atmospheric glow
+      // 1. Draw outer ambient atmospheric glow (hardware accelerated gradients)
       const outerGlow = ctx.createRadialGradient(
         centerX,
         centerY,
@@ -164,16 +175,13 @@ export const AetherFluidOrb: React.FC<AetherFluidOrbProps> = ({
           gradient.addColorStop(0, activeTone.primaryColor);
           gradient.addColorStop(1, activeTone.secondaryColor);
           ctx.fillStyle = gradient;
-          ctx.globalAlpha = 0.85;
-          ctx.shadowColor = activeTone.primaryColor;
-          ctx.shadowBlur = 24 * (0.8 + effectiveVol);
+          ctx.globalAlpha = 0.88;
           ctx.fill();
         } else if (l === 1) {
           gradient.addColorStop(0, activeTone.secondaryColor);
           gradient.addColorStop(1, '#ffffff');
           ctx.fillStyle = gradient;
           ctx.globalAlpha = 0.35 + effectiveVol * 0.25;
-          ctx.shadowBlur = 0;
           ctx.fill();
         } else {
           ctx.strokeStyle = '#ffffff';
