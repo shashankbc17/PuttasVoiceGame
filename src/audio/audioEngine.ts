@@ -288,7 +288,7 @@ class AudioEngine {
     toneId: TonePresetId
   ): Promise<{ blob: Blob; url: string; buffer: AudioBuffer }> {
     const preset = TONE_PRESETS.find((p) => p.id === toneId) || TONE_PRESETS[0];
-    const duration = sourceBuffer.duration + (preset.reverbAmount > 0.3 ? 1.5 : 0.5);
+    const duration = sourceBuffer.duration * (preset.pitchShift < 0 ? 1.6 : 1.2) + (preset.reverbAmount > 0.3 ? 2.5 : 0.8);
 
     const offlineCtx = new OfflineAudioContext(
       sourceBuffer.numberOfChannels,
@@ -296,94 +296,153 @@ class AudioEngine {
       sourceBuffer.sampleRate
     );
 
-    // Source
+    // Primary voice source
     const source = offlineCtx.createBufferSource();
     source.buffer = sourceBuffer;
 
-    // Pitch shift layer
-    let pitchShiftedNode: AudioNode;
-    if (preset.pitchShift !== 0) {
-      const pitchTarget = offlineCtx.createGain();
-      // Apply playbackRate compensation if needed or granular pitch
-      source.playbackRate.setValueAtTime(Math.pow(2, preset.pitchShift / 12), 0);
-      source.connect(pitchTarget);
-      pitchShiftedNode = pitchTarget;
-    } else {
-      pitchShiftedNode = source;
-    }
+    let primaryNode: AudioNode = source;
 
-    let currentNode: AudioNode = pitchShiftedNode;
+    // Apply distinct character pitch & formant architectures
+    if (toneId === 'demon') {
+      // 1. Heavy pitch drop: -7.5 semitones
+      source.playbackRate.setValueAtTime(0.65, 0);
 
-    // Tone: Ring Modulation (Cyborg / Alien)
-    if (preset.ringModFreq > 0) {
-      const ringOsc = offlineCtx.createOscillator();
-      ringOsc.type = 'sine';
-      ringOsc.frequency.setValueAtTime(preset.ringModFreq, 0);
+      // 2. Dual Sub-Harmonic Layer (-12 semitones octave-down demon growl)
+      const subSource = offlineCtx.createBufferSource();
+      subSource.buffer = sourceBuffer;
+      subSource.playbackRate.setValueAtTime(0.5, 0); // 1 full octave down!
 
-      const ringGain = offlineCtx.createGain();
-      ringGain.gain.setValueAtTime(0, 0);
-      ringOsc.connect(ringGain.gain);
+      const subGain = offlineCtx.createGain();
+      subGain.gain.setValueAtTime(0.45, 0);
+      subSource.connect(subGain);
+      subSource.start(0);
 
-      currentNode.connect(ringGain);
-      ringOsc.start(0);
-      currentNode = ringGain;
-    }
+      // Low-shelf sub-bass rumble (+14dB at 80Hz)
+      const subBass = offlineCtx.createBiquadFilter();
+      subBass.type = 'lowshelf';
+      subBass.frequency.setValueAtTime(90, 0);
+      subBass.gain.setValueAtTime(14, 0);
 
-    // Tone: Bandpass Filter (Walkie-Talkie / Lo-Fi)
-    if (preset.bandpassRange) {
+      const merger = offlineCtx.createGain();
+      source.connect(merger);
+      subGain.connect(merger);
+      merger.connect(subBass);
+
+      primaryNode = subBass;
+    } else if (toneId === 'chipmunk') {
+      // High pitch squeak: +9 semitones
+      source.playbackRate.setValueAtTime(1.68, 0);
+
+      // High-pass filter (remove all low frequencies)
       const hp = offlineCtx.createBiquadFilter();
       hp.type = 'highpass';
-      hp.frequency.setValueAtTime(preset.bandpassRange[0], 0);
+      hp.frequency.setValueAtTime(480, 0);
+
+      // Treble presence boost
+      const highPeak = offlineCtx.createBiquadFilter();
+      highPeak.type = 'peaking';
+      highPeak.frequency.setValueAtTime(3600, 0);
+      highPeak.gain.setValueAtTime(10, 0);
+      highPeak.Q.setValueAtTime(2, 0);
+
+      source.connect(hp);
+      hp.connect(highPeak);
+      primaryNode = highPeak;
+    } else if (toneId === 'robot') {
+      // Monotone clipped robot
+      source.playbackRate.setValueAtTime(0.92, 0);
+
+      // Metallic Ring Modulator (55Hz carrier)
+      const ringOsc = offlineCtx.createOscillator();
+      ringOsc.type = 'sine';
+      ringOsc.frequency.setValueAtTime(55, 0);
+
+      const ringGain = offlineCtx.createGain();
+      ringGain.gain.setValueAtTime(0.2, 0);
+      ringOsc.connect(ringGain.gain);
+
+      // Resonant metallic tin-can bandpass filter
+      const metalFilter = offlineCtx.createBiquadFilter();
+      metalFilter.type = 'peaking';
+      metalFilter.frequency.setValueAtTime(1250, 0);
+      metalFilter.gain.setValueAtTime(12, 0);
+      metalFilter.Q.setValueAtTime(6.0, 0);
+
+      source.connect(ringGain);
+      ringGain.connect(metalFilter);
+      ringOsc.start(0);
+      primaryNode = metalFilter;
+    } else if (toneId === 'walkietalkie') {
+      source.playbackRate.setValueAtTime(1.05, 0);
+
+      // Narrow 400Hz - 2.8kHz telephone radio bandpass
+      const hp = offlineCtx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.setValueAtTime(420, 0);
 
       const lp = offlineCtx.createBiquadFilter();
       lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(preset.bandpassRange[1], 0);
+      lp.frequency.setValueAtTime(2700, 0);
+      lp.Q.setValueAtTime(3.0, 0);
 
-      currentNode.connect(hp);
+      source.connect(hp);
       hp.connect(lp);
-      currentNode = lp;
+      primaryNode = lp;
+    } else if (toneId === 'alien') {
+      // Cosmic Alien FM Vibrato
+      source.playbackRate.setValueAtTime(1.3, 0);
+
+      const vibrato = offlineCtx.createOscillator();
+      vibrato.type = 'triangle';
+      vibrato.frequency.setValueAtTime(12, 0); // 12Hz rapid alien wobble
+
+      const vibratoGain = offlineCtx.createGain();
+      vibratoGain.gain.setValueAtTime(0.25, 0);
+      vibrato.connect(vibratoGain);
+
+      const delay = offlineCtx.createDelay(0.05);
+      delay.delayTime.setValueAtTime(0.015, 0);
+      vibratoGain.connect(delay.delayTime);
+
+      source.connect(delay);
+      vibrato.start(0);
+      primaryNode = delay;
+    } else if (toneId === 'ethereal') {
+      source.playbackRate.setValueAtTime(1.02, 0);
+      primaryNode = source;
+    } else {
+      primaryNode = source;
     }
 
-    // Tone: Demon Sub-bass or Chipmunk Treble boost
-    if (preset.id === 'demon') {
-      const lowShelf = offlineCtx.createBiquadFilter();
-      lowShelf.type = 'lowshelf';
-      lowShelf.frequency.setValueAtTime(100, 0);
-      lowShelf.gain.setValueAtTime(9, 0); // +9dB deep rumble
-      currentNode.connect(lowShelf);
-      currentNode = lowShelf;
-    } else if (preset.id === 'chipmunk') {
-      const highShelf = offlineCtx.createBiquadFilter();
-      highShelf.type = 'highshelf';
-      highShelf.frequency.setValueAtTime(3500, 0);
-      highShelf.gain.setValueAtTime(7, 0);
-      currentNode.connect(highShelf);
-      currentNode = highShelf;
-    }
+    let currentNode: AudioNode = primaryNode;
 
-    // Tone: Distortion / Drive
-    if (preset.distortionAmount > 0) {
+    // Distortion layer for Walkie-Talkie, Robot, and Demon
+    const distAmount =
+      toneId === 'walkietalkie' ? 0.75 : toneId === 'robot' ? 0.5 : toneId === 'demon' ? 0.35 : 0;
+    if (distAmount > 0) {
       const distortion = offlineCtx.createWaveShaper();
-      distortion.curve = this.makeDistortionCurve(preset.distortionAmount) as unknown as Float32Array<ArrayBuffer>;
+      distortion.curve = this.makeDistortionCurve(distAmount) as unknown as Float32Array<ArrayBuffer>;
       distortion.oversample = '4x';
       currentNode.connect(distortion);
       currentNode = distortion;
     }
 
-    // Tone: Reverb & Spatial Reflections
-    if (preset.reverbAmount > 0.05) {
+    // Reverb layer (Massive for Astral & Demon, Dry for Radio & Robot)
+    const reverbAmt =
+      toneId === 'ethereal' ? 0.85 : toneId === 'demon' ? 0.6 : toneId === 'alien' ? 0.4 : 0.05;
+    if (reverbAmt > 0.1) {
       const convolver = offlineCtx.createConvolver();
       convolver.buffer = this.createImpulseResponse(
         offlineCtx,
-        preset.reverbAmount * 3,
-        preset.id === 'demon' ? 1.5 : 2.5
+        reverbAmt * 3.5,
+        toneId === 'demon' ? 1.4 : 2.6
       );
 
       const dryGain = offlineCtx.createGain();
       const wetGain = offlineCtx.createGain();
 
-      dryGain.gain.setValueAtTime(1 - preset.reverbAmount * 0.4, 0);
-      wetGain.gain.setValueAtTime(preset.reverbAmount * 0.9, 0);
+      dryGain.gain.setValueAtTime(1 - reverbAmt * 0.45, 0);
+      wetGain.gain.setValueAtTime(reverbAmt * 0.85, 0);
 
       currentNode.connect(dryGain);
       currentNode.connect(convolver);
@@ -395,13 +454,31 @@ class AudioEngine {
       currentNode = mixGain;
     }
 
+    // Echo Delay for Ethereal
+    if (toneId === 'ethereal') {
+      const delay = offlineCtx.createDelay(1.0);
+      delay.delayTime.setValueAtTime(0.35, 0);
+
+      const delayFeedback = offlineCtx.createGain();
+      delayFeedback.gain.setValueAtTime(0.42, 0);
+
+      delay.connect(delayFeedback);
+      delayFeedback.connect(delay);
+
+      const delayMix = offlineCtx.createGain();
+      currentNode.connect(delay);
+      delay.connect(delayMix);
+      currentNode.connect(delayMix);
+      currentNode = delayMix;
+    }
+
     // Master Limiter to prevent clipping
     const compressor = offlineCtx.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-2, 0);
-    compressor.knee.setValueAtTime(10, 0);
-    compressor.ratio.setValueAtTime(12, 0);
-    compressor.attack.setValueAtTime(0.003, 0);
-    compressor.release.setValueAtTime(0.15, 0);
+    compressor.threshold.setValueAtTime(-1.5, 0);
+    compressor.knee.setValueAtTime(8, 0);
+    compressor.ratio.setValueAtTime(16, 0);
+    compressor.attack.setValueAtTime(0.002, 0);
+    compressor.release.setValueAtTime(0.12, 0);
 
     currentNode.connect(compressor);
     compressor.connect(offlineCtx.destination);

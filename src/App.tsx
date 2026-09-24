@@ -14,7 +14,7 @@ import { LanguagePicker } from './components/controls/LanguagePicker';
 import { RecordButton } from './components/controls/RecordButton';
 import { TranslationCard } from './components/output/TranslationCard';
 import { SettingsModal } from './components/settings/SettingsModal';
-import { Waves, Sparkles, AlertCircle, Send, Play, Wand2 } from 'lucide-react';
+import { Waves, Sparkles, AlertCircle, Send, Play, Wand2, Trash2 } from 'lucide-react';
 
 const SAMPLE_PROMPTS = [
   'Greetings human! I am your overlord.',
@@ -38,13 +38,16 @@ export default function App() {
   const [customInputText, setCustomInputText] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Audio & Data States
+  // Persistent Text & Audio State (NEVER lost when changing tone!)
+  const [persistedSpokenText, setPersistedSpokenText] = useState<string>('');
+  const [persistedTranslatedText, setPersistedTranslatedText] = useState<string>('');
   const [processedResult, setProcessedResult] = useState<ProcessedAudio | null>(null);
+
   const [workerProgress, setWorkerProgress] = useState<WorkerProgress | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [cloudConfig, setCloudConfig] = useState(cloudAiEngine.getConfig());
 
-  // Keep last recorded audio buffer for re-morphing
+  // Cached AudioBuffer of user's voice for re-morphing through DSP
   const lastRecordedBufferRef = useRef<AudioBuffer | null>(null);
   const stopNativeRecognitionRef = useRef<(() => void) | null>(null);
 
@@ -95,7 +98,7 @@ export default function App() {
           try {
             transcript = await webGpuEngine.transcribeAudio(float32);
           } catch {
-            // Fall through to direct voice changer
+            // Fall through
           }
         }
 
@@ -103,19 +106,21 @@ export default function App() {
           // We have recognized words! Proceed to translation & character speech
           await handleProcessSpokenText(transcript);
         } else {
-          // Speech-to-text was empty or blocked by mobile OS:
-          // Immediately modulate the user's REAL RECORDED VOICE through the DSP rack!
+          // Direct voice changer fallback (when STT is blocked on mobile)
           setStatusMessage(`Morphing your voice into ${activeTone.name}...`);
           const { blob, url, buffer: modulatedBuffer } = await audioEngine.renderModulatedAudio(
             buffer,
             selectedToneId
           );
 
+          const defaultSpoken = persistedSpokenText || 'Your Spoken Voice (Direct Audio Modulation)';
+          const defaultTranslated = persistedTranslatedText || `Voice morphed with ${activeTone.name} DSP effects`;
+
           const result: ProcessedAudio = {
             id: `${Date.now()}`,
             timestamp: Date.now(),
-            originalText: 'Your Spoken Voice (Direct Audio Modulation)',
-            translatedText: `Voice morphed with ${activeTone.name} DSP effects`,
+            originalText: defaultSpoken,
+            translatedText: defaultTranslated,
             sourceLang,
             targetLang,
             appliedTone: selectedToneId,
@@ -133,7 +138,7 @@ export default function App() {
         }
       } catch (err) {
         setErrorMessage((err as Error).message || 'Audio capture failed');
-        setStatusMessage('Ready • Tap Mic');
+        setStatusMessage('Ready • Tap Mic to Speak');
       }
     } else {
       // START RECORDING
@@ -143,7 +148,7 @@ export default function App() {
         setIsPlaying(false);
         setInterimTranscript('');
 
-        // 1. ALWAYS open microphone with Web Audio so Aether Fluid Orb dances and records!
+        // 1. ALWAYS open microphone with Web Audio so Aether Fluid Orb dances and records
         await audioEngine.startRecording();
         setIsListening(true);
         setStatusMessage('Listening to voice... Speak now!');
@@ -160,19 +165,18 @@ export default function App() {
                 }
               },
               (err) => {
-                // Speech recognition warning (doesn't break direct audio recording)
                 console.warn('Native speech notice:', err);
               }
             );
             stopNativeRecognitionRef.current = stopRec;
           } catch {
-            // Speech recognition not available, will use direct voice changer
+            // Speech recognition not available
           }
         }
       } catch (err) {
         setErrorMessage(
           (err as Error).message ||
-            'Could not access microphone. Please allow microphone permissions in Chrome settings.'
+            'Could not access microphone. Please allow microphone permissions in Chrome/Safari settings.'
         );
         setIsListening(false);
         setStatusMessage('Mic Access Denied');
@@ -186,6 +190,7 @@ export default function App() {
     if (!text) return;
 
     setInterimTranscript(text);
+    setPersistedSpokenText(text);
 
     try {
       // Step 1: Translate text if needed
@@ -209,7 +214,9 @@ export default function App() {
         }
       }
 
-      // Step 2: Update UI state
+      setPersistedTranslatedText(translated);
+
+      // Step 2: Update UI state (Preserves text!)
       const result: ProcessedAudio = {
         id: `${Date.now()}`,
         timestamp: Date.now(),
@@ -266,11 +273,11 @@ export default function App() {
     setSelectedToneId(toneId);
     const preset = TONE_PRESETS.find((p) => p.id === toneId) || activeTone;
     const demoPhrases: Record<TonePresetId, string> = {
-      demon: 'I am the ancient Titan demon! Bow before my power!',
-      chipmunk: 'Hey look at me! I sound super fast and squeaky!',
-      robot: 'System online. Human voice synthesis protocol initiated.',
+      demon: 'I am the ancient Titan demon! Bow before my underworld roar!',
+      chipmunk: 'Hey look at me! I am super fast, high pitched and squeaky!',
+      robot: 'System online. Cybernetic dalek protocol fully engaged.',
       walkietalkie: 'Over and out. Radio transmission loud and clear, 10-4.',
-      ethereal: 'Floating through the cosmic aether of the astral realm...',
+      ethereal: 'Floating through the cosmic aether of the astral dimension...',
       alien: 'Greetings Earth creature, we have arrived from galaxy 9.',
       original: 'This is clean natural voice in high definition audio.',
     };
@@ -280,34 +287,54 @@ export default function App() {
   };
 
   // Re-modulate current translated speech or audio buffer with a new tone
+  // CRITICAL: NEVER WIPES OUT THE SPOKEN OR TRANSLATED TEXT!
   const handleReModulate = async (toneId: TonePresetId) => {
     setSelectedToneId(toneId);
-    if (!processedResult) return;
 
-    const updated = {
-      ...processedResult,
-      appliedTone: toneId,
-    };
-    setProcessedResult(updated);
+    // Determine the text to keep
+    const textToKeep =
+      persistedTranslatedText ||
+      processedResult?.translatedText ||
+      persistedSpokenText ||
+      processedResult?.originalText;
 
-    // If we have text, speak with new tone
-    if (processedResult.translatedText && !processedResult.translatedText.startsWith('Voice morphed with')) {
-      playCharacterVoice(
-        processedResult.translatedText,
-        processedResult.targetLang,
-        toneId
-      );
+    const originalToKeep =
+      persistedSpokenText || processedResult?.originalText || 'Your Spoken Voice';
+
+    // If we have text, update result card and speak with new character tone!
+    if (textToKeep && !textToKeep.startsWith('Voice morphed with')) {
+      const updated: ProcessedAudio = {
+        id: `${Date.now()}`,
+        timestamp: Date.now(),
+        originalText: originalToKeep,
+        translatedText: textToKeep,
+        sourceLang: processedResult?.sourceLang || sourceLang,
+        targetLang: processedResult?.targetLang || targetLang,
+        appliedTone: toneId,
+      };
+
+      setProcessedResult(updated);
+      playCharacterVoice(textToKeep, updated.targetLang, toneId);
     } else if (lastRecordedBufferRef.current) {
-      // Re-modulate the raw recorded audio buffer
+      // Re-modulate the raw recorded audio buffer with new DSP chain
+      setStatusMessage(`Re-morphing into ${toneId}...`);
       const { blob, url, buffer: modulatedBuffer } = await audioEngine.renderModulatedAudio(
         lastRecordedBufferRef.current,
         toneId
       );
+
       setProcessedResult({
-        ...updated,
+        id: `${Date.now()}`,
+        timestamp: Date.now(),
+        originalText: originalToKeep,
+        translatedText: `Voice morphed with ${toneId} DSP effects`,
+        sourceLang: processedResult?.sourceLang || sourceLang,
+        targetLang: processedResult?.targetLang || targetLang,
+        appliedTone: toneId,
         audioBlobUrl: url,
         durationSec: blob.size,
       });
+
       setIsPlaying(true);
       audioEngine.playBuffer(modulatedBuffer, () => {
         setIsPlaying(false);
@@ -338,6 +365,19 @@ export default function App() {
     audioEngine.stopPlayback();
     audioEngine.stopSpeechVisualizer();
     setIsPlaying(false);
+    setStatusMessage('Ready • Tap Mic to Speak');
+  };
+
+  const handleClearSession = () => {
+    nativeEngine.stopSpeaking();
+    audioEngine.stopPlayback();
+    audioEngine.stopSpeechVisualizer();
+    setIsPlaying(false);
+    setPersistedSpokenText('');
+    setPersistedTranslatedText('');
+    setInterimTranscript('');
+    setProcessedResult(null);
+    lastRecordedBufferRef.current = null;
     setStatusMessage('Ready • Tap Mic to Speak');
   };
 
@@ -377,6 +417,18 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Clear Session Button if text exists */}
+          {(persistedSpokenText || processedResult) && (
+            <button
+              onClick={handleClearSession}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 text-white/60 hover:text-red-400 text-xs transition-colors border border-white/10"
+              title="Clear text and start new recording"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Clear</span>
+            </button>
+          )}
+
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-white/70">
             <span
               className="w-2 h-2 rounded-full"
@@ -461,7 +513,7 @@ export default function App() {
           {/* Quick Instant Demos (Hear tones with 1 tap!) */}
           <div className="flex flex-col gap-1.5">
             <span className="text-[10px] font-mono text-white/40 uppercase tracking-wider">
-              Instant Tone Demos (Tap to Test Sound):
+              Instant Tone Demos (Tap to Test Voice):
             </span>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
               <button
@@ -517,9 +569,7 @@ export default function App() {
             selectedTone={selectedToneId}
             onSelectTone={(id) => {
               setSelectedToneId(id);
-              if (processedResult && !isListening) {
-                handleReModulate(id);
-              }
+              handleReModulate(id);
             }}
           />
         </section>
@@ -575,8 +625,8 @@ export default function App() {
 
           {/* Tablet & Mobile Tip */}
           <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 flex flex-col sm:flex-row items-start sm:items-center justify-between text-[11px] text-white/40 font-mono gap-1">
-            <span>💡 Select same language to hear your voice morphed directly!</span>
-            <span className="text-white/60">Android & iOS Touch Ready</span>
+            <span>💡 Tap any tone above to hear the same text re-morphed!</span>
+            <span className="text-white/60">Text Stays Locked</span>
           </div>
         </section>
       </main>
