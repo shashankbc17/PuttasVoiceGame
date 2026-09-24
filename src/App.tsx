@@ -381,10 +381,101 @@ export default function App() {
     setStatusMessage('Ready • Tap Mic to Speak');
   };
 
-  const handleSwapLanguages = () => {
-    const temp = sourceLang;
-    setSourceLang(targetLang);
-    setTargetLang(temp);
+  // Dynamic Auto Re-Translation when Target Language changes
+  const handleTargetLanguageChange = async (newTarget: Language) => {
+    setTargetLang(newTarget);
+
+    const textToTranslate =
+      persistedSpokenText ||
+      processedResult?.originalText;
+
+    if (!textToTranslate || textToTranslate.startsWith('Your Spoken Voice')) {
+      return;
+    }
+
+    try {
+      setStatusMessage(`Translating to ${newTarget.name}...`);
+      let translated = textToTranslate;
+
+      if (sourceLang.code !== newTarget.code) {
+        if (engineMode === 'cloud') {
+          translated = await cloudAiEngine.translateWithStyle(
+            textToTranslate,
+            sourceLang,
+            newTarget,
+            selectedToneId
+          );
+        } else {
+          translated = await nativeEngine.translateText(
+            textToTranslate,
+            sourceLang.code,
+            newTarget.code
+          );
+        }
+      }
+
+      setPersistedTranslatedText(translated);
+
+      const updated: ProcessedAudio = {
+        id: `${Date.now()}`,
+        timestamp: Date.now(),
+        originalText: textToTranslate,
+        translatedText: translated,
+        sourceLang,
+        targetLang: newTarget,
+        appliedTone: selectedToneId,
+      };
+
+      setProcessedResult(updated);
+
+      // Immediately speak the new translation in the target language!
+      playCharacterVoice(translated, newTarget, selectedToneId);
+    } catch (err) {
+      setErrorMessage((err as Error).message || 'Re-translation failed');
+      setStatusMessage('Ready • Tap Mic to Speak');
+    }
+  };
+
+  const handleSourceLanguageChange = (newSource: Language) => {
+    setSourceLang(newSource);
+  };
+
+  const handleSwapLanguages = async () => {
+    const newSource = targetLang;
+    const newTarget = sourceLang;
+    setSourceLang(newSource);
+    setTargetLang(newTarget);
+
+    // If we have existing text, translate in the reverse direction!
+    const textToTranslate = persistedTranslatedText || persistedSpokenText;
+    if (textToTranslate && !textToTranslate.startsWith('Voice morphed with')) {
+      try {
+        setStatusMessage(`Translating to ${newTarget.name}...`);
+        const reversed = await nativeEngine.translateText(
+          textToTranslate,
+          newSource.code,
+          newTarget.code
+        );
+
+        setPersistedSpokenText(textToTranslate);
+        setPersistedTranslatedText(reversed);
+
+        const updated: ProcessedAudio = {
+          id: `${Date.now()}`,
+          timestamp: Date.now(),
+          originalText: textToTranslate,
+          translatedText: reversed,
+          sourceLang: newSource,
+          targetLang: newTarget,
+          appliedTone: selectedToneId,
+        };
+
+        setProcessedResult(updated);
+        playCharacterVoice(reversed, newTarget, selectedToneId);
+      } catch {
+        // Ignore
+      }
+    }
   };
 
   // Submit manual text / sample prompt
@@ -585,12 +676,12 @@ export default function App() {
             hasCloudKey={cloudAiEngine.hasApiKey()}
           />
 
-          {/* Language Translation Picker */}
+          {/* Language Translation Picker with Auto Re-Translation */}
           <LanguagePicker
             sourceLang={sourceLang}
             targetLang={targetLang}
-            onSelectSource={setSourceLang}
-            onSelectTarget={setTargetLang}
+            onSelectSource={handleSourceLanguageChange}
+            onSelectTarget={handleTargetLanguageChange}
             onSwap={handleSwapLanguages}
           />
 
